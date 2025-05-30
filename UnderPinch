@@ -1,0 +1,173 @@
+import pyomo.environ as pyo
+model = pyo.ConcreteModel()
+m = model
+# Define lists (NOT sets {}) for proper Pyomo use
+hot_streams = ['H1','H2','H3','F']
+cold_streams = ['C1','C2','C3','C4','Cw']
+temperature_intervals = ['TI3','TI4','TI5']
+
+# Initialize Pyomo sets
+m.i = pyo.Set(dimen=1, initialize=hot_streams)
+m.j = pyo.Set(dimen=1, initialize=cold_streams)
+m.k = pyo.Set(dimen=1, initialize=temperature_intervals)
+
+# Parameters
+FH_cp = {'H1': 1450.66, 'H2': 2016.73, 'F': 0}
+FC_cp = {'C1': 17.34, 'C2': 1387.47, 'C3': 1893.34, 'C4': 769.36, 'Cw': 0}
+
+m.FH_cp = pyo.Param(m.i, initialize=FH_cp)
+m.FC_cp = pyo.Param(m.j, initialize=FC_cp)
+
+# Entangled sets: (stream, interval)
+# Hot process streams
+m.HP = pyo.Set(
+    dimen=2,
+    within=m.i*m.k,
+    initialize=[
+        ('H1','TI3'),
+        ('H2','TI3'),
+        ('H2','TI4'),
+        ('H2','TI5'),
+    ]
+)
+
+#Hot utility strems
+m.HU = pyo.Set(
+    dimen=2,
+    within=m.i * m.k,
+    initialize=[]
+)
+
+m.HP_HU = pyo.Set(
+    dimen=2,
+    within=m.i*m.k,
+    initialize=[
+        ('H1','TI3'),
+        ('H2','TI3'),
+        ('H2', 'TI4'),
+        ('H2', 'TI5'),
+])
+m.CP = pyo.Set(dimen=2,
+               within=m.j*m.k,
+               initialize=
+               [('C1','TI3'),('C1','TI4'),('C1','TI5'),
+                ('C2','TI3'),('C2','TI4'),
+                ('C4','TI3'),
+                ('Cw','TI5')])
+#Cold utility streams that take part n set process
+m.CU = pyo.Set(dimen=2, within= m.j * m.k, initialize=[
+    ('Cw','TI5')
+])
+#Global _Heat_Transfer Hps set for all the allowed connectins between the material streams
+m.Global_Heat_transf = pyo.Set(dimen=3, within=m.i*m.j*m.k,
+                               initialize=[('H1','C2','TI3'),
+                                           ('H1','C4','TI3'),('H1','C1','TI3'),
+
+                                           ('H2','C2','TI3'),('H2','C2','TI4'),
+                                           ('H2','C1','TI3'),('H2','C1','TI4'),
+                                           ('H2','C1','TI5'),
+                                           ('H2','C4','TI3'),
+                                           ('H2','Cw','TI5'),
+                                           ])
+#Parameters QH(i,k) for the thermal load of every hot stream in said temperature interval k
+QH_hot = {('H1','TI3'):1450.66*(213-70),
+          ('H2','TI3'):2016.73*(213-50),
+          ('H2','TI4'):2016.73*(50-40.92),
+          ('H2','TI5'):2016.73*(40.92-30)}
+m.QH_index = pyo.Set(dimen=2, initialize=QH_hot.keys())
+
+m.QH = pyo.Param(m.QH_index, initialize=QH_hot)
+#Parameter QC(j,k) dold process stream load for all the cold streams
+QC_cold = {('C1','TI3'):17.34*(193.3-30),
+           ('C1','TI4'):(30-20)*17.34,
+           ('C1','TI5'):(20-5)*17.34,
+           ('C2','TI3'):(193-30)*1387.47,
+           ('C2','TI4'):(30-20)*1893.34,
+           ('C4','TI3'):(190-30)*769.36,
+
+           ('Cw','TI5'):202903.05}
+m.QC_index = pyo.Set(dimen=2,initialize=QC_cold.keys())
+m.QC = pyo.Param(m.QC_index,initialize=QC_cold)
+#Model definition for the HEN
+#Binary Variable
+m.y = pyo.Var(model.i,model.j,domain=pyo.Binary)
+m.Q = pyo.Var(model.i,model.j,domain=pyo.NonNegativeReals)
+m.Q1 = pyo.Var(model.i,model.j,model.k,domain=pyo.NonNegativeReals)
+m.R = pyo.Var(model.i,model.k,domain=pyo.NonNegativeReals)
+m.RE = pyo.Var(model.k,domain=pyo.NonNegativeReals)
+#Constraint Definitions##################################
+def hot_energy_balance_rule(m, i, k):
+    # Get previous temperature interval if possible
+    k_index = m.k.ord(k)
+    if k_index == 1:
+        R_prev = 0
+    else:
+        k_prev = m.k.at(k_index - 1)
+        R_prev = m.R[i, k_prev]
+
+    # Sum Q1 over matching cold streams in CP
+    heat_transferred = sum(
+        m.Q1[i, j, k] for (j_, k_) in m.CP if k_ == k for j in [j_]
+    )
+
+    return m.R[i, k] - R_prev + heat_transferred == m.QH[i, k]
+m.HotEnergyBalance = pyo.Constraint(m.HP, rule=hot_energy_balance_rule)
+
+def constrarule1(m, i, k):
+    return sum(
+        m.Q1[i, j, k] for (j, k2) in m.CP if k2 == k
+    ) == m.QH[i, k]
+m.constain2 = pyo.Constraint(m.HU,rule=constrarule1)
+
+def constrain2(m,j,k):
+    return sum(
+        m.Q1[i, j, k]
+        for (i, k2) in m.HP_HU if k2 == k
+    ) == m.QC[j, k]
+
+m.constrain2 = pyo.Constraint(m.CP, rule=constrain2)
+
+def constraint3(m,k):
+    return sum(m.R[i,k] for (i,k_) in m.HP if k_ == k ) == m.RE[k]
+m.constraint3 = pyo.Constraint(m.k,rule=constraint3)
+
+def constaintrule4(m,i,j):
+    return sum(
+        m.Q1[i, j, k]
+        for (i2, j2, k) in m.Global_Heat_transf if i2 == i and j2 == j
+    ) == m.Q[i, j]
+m.constraint4 = pyo.Constraint(m.i,m.j,rule=constaintrule4)
+
+def constraint5(m, i, j):
+    total_QH = sum(m.QH[i2, k2] for (i2, k2) in m.QH_index if i2 == i)
+    total_QC = sum(m.QC[j2, k2] for (j2, k2) in m.QC_index if j2 == j)
+    return m.Q[i, j] <= min(total_QH, total_QC) * m.y[i, j]
+m.constraintrule5  = pyo.Constraint(m.i,m.j,rule= constraint5)
+
+m.objective = pyo.Objective(
+    expr=sum(m.y[i, j] for i in m.i for j in m.j),
+    sense=pyo.minimize  # or pyo.maximize depending on your goal
+)
+
+solver = pyo.SolverFactory('gurobi')
+results = solver.solve(model,tee=True)
+print("\n--- Match Decisions (y[i,j]) ---")
+for i in m.i:
+    for j in m.j:
+        if pyo.value(m.y[i, j]) > 0.5:
+            print(f"Exchanger selected: {i} ↔ {j}")
+
+##################Results###############################################
+
+print("\n--- Heat Exchanged Q[i,j] ---")
+for i in m.i:
+    for j in m.j:
+        q_val = pyo.value(m.Q[i, j])
+        if q_val > 1e-3:
+            print(f"Q[{i}, {j}] = {q_val:.2f}")
+print("\n--- Heat Transfers Q1[i,j,k] ---")
+for (i, j, k) in m.Global_Heat_transf:
+    q1_val = pyo.value(m.Q1[i, j, k])
+    if q1_val > 1e-3:
+        print(f"Q1[{i}, {j}, {k}] = {q1_val:.2f}")
+
