@@ -1,0 +1,119 @@
+#ΣΧΕ 2025 pinch point location
+import pyomo.environ as pyo
+#Model definition for pinch point location
+model = pyo.ConcreteModel()
+m = model
+#Define static lists for the how and cold Streams of the also define the hottest utility F we were going to use
+Hot_streams = ['H1','H2','F']
+Cold_streams = ['C1','C2','C3','C4','Cw']
+model.i = pyo.Set(initialize=Hot_streams)
+model.j = pyo.Set(initialize=Cold_streams)
+#parameters Temperature Intervals
+temperature_intervals = ['TI1','TI2','TI3','TI4','TI5']
+model.k = pyo.Set(initialize=temperature_intervals)
+#Parameters for the Cp of the Ht streams use of dictionaries to connect values to sets
+FH_cp = {'H1':1450.66,'H2':2016.73,'F':0}
+FC_cp = {'C1':17.34,'C2':1387.47,'C3':1893.34,'C4':769.36,'Cw':0}
+#Declare the parameters of the model
+model.FH_cp = pyo.Param(model.i,initialize=FH_cp)
+model.FC_cp = pyo.Param(model.j,initialize=FC_cp)
+#Define the subset for the top and bottom utilities
+model.ik = pyo.Set(initialize=[('F', 'TI1')])
+model.jk = pyo.Set(initialize=[('Cw', 'TI5')])
+
+# Variables
+model.F = pyo.Var(model.ik, domain=pyo.NonNegativeReals)     # Hot utility
+model.Qw = pyo.Var(model.jk, domain=pyo.NonNegativeReals)    # Cold utility
+
+model.R = pyo.Var(model.k,domain=pyo.NonNegativeReals)
+def energybalance_TI1(model):
+    return m.R['TI1'] - m.F['F','TI1'] == m.FH_cp['H1']*(756.3-220) - m.FC_cp['C3']*(262-200)- m.FC_cp['C2']*(675-200)
+
+def energybalance_TI2(model):
+    return m.R['TI2']-m.R['TI1'] == m.FH_cp['H1']*(220-213)+m.FH_cp['H2']*(220-213) - (200-193)*(m.FC_cp['C1']+m.FC_cp['C2']+m.FC_cp['C3']+m.FC_cp['C4'])
+
+def energybalance_TI3(model):
+    return m.R['TI3'] - m.R['TI2'] == m.FH_cp['H1']*(213-70)+m.FH_cp['H2']*(213-50) - (193-30)*(m.FC_cp['C4']+m.FC_cp['C1']+m.FC_cp['C2'])
+def energybalance_TI4(model):
+    return m.R['TI4']-m.R['TI3'] == m.FH_cp['H2']*(50-40.92)-(30-20.92)*(m.FC_cp['C1']+m.FC_cp['C2'])
+def energybalance_TI5(model):
+    return m.Qw['Cw','TI5'] - m.R['TI4'] == m.FH_cp['H2']*(40.92-30)-m.FC_cp['C1']*(20.92-5)
+
+#Apply the constraints for the model
+model.energy_balance_TI1 = pyo.Constraint(rule=energybalance_TI1)
+model.energy_balance_TI2 = pyo.Constraint(rule=energybalance_TI2)
+model.energy_balance_TI3 = pyo.Constraint(rule=energybalance_TI3)
+model.energy_balance_TI4 = pyo.Constraint(rule=energybalance_TI4)
+model.energy_balance_TI5 = pyo.Constraint(rule=energybalance_TI5)
+model.constrRTI9 = pyo.Constraint(expr=(model.R['TI5']==0))
+#Define the objective function to minimize
+def objective_rule(m):
+    return (
+        m.F['F','TI1']
+        + m.Qw['Cw','TI5']
+    )
+model.obj = pyo.Objective(rule=objective_rule, sense=pyo.minimize)
+
+solver = pyo.SolverFactory('gurobi')
+results = solver.solve(model,tee=True)
+# Display optimal utility usage
+print("\nOptimal Utility Usage:")
+print("Hot Utility (F at TI1):", round(m.F['F', 'TI1'].value, 2), "kW")
+print("Cold Utility (Cw at TI5):", round(m.Qw['Cw', 'TI5'].value, 2), "kW")
+
+# Display residual heat in each temperature interval
+print("\nResidual Heat Cascade:")
+pinch_point = None
+for k in model.k:
+    r_val = m.R[k].value
+    print(f"{k}: {r_val:.2f} kW")
+    if r_val == 0 and pinch_point is None:
+        pinch_point = k
+
+# Show the identified pinch point
+if pinch_point:
+    print(f"\n Pinch Point Identified at Interval: {pinch_point}")
+else:
+    print("\n No pinch point (residual heat never reached zero).")
+    '''
+def energybalance_TI1(model):
+    return m.R['TI1'] - m.F['F','TI1'] == m.FH_cp['H1']*(756.3-220) - m.FC_cp['C3']*(261-200)- m.FC_cp['C2']*(675-200)
+
+def energybalance_TI2(model):
+    return m.R['TI2']-m.R['TI1'] == m.FH_cp['H1']*(220-213)+m.FH_cp['H2']*(220-213) - (200-193)*(m.FC_cp['C1']+m.FC_cp['C2']+m.FC_cp['C3']+m.FC_cp['C4'])
+
+def energybalance_TI3(model):
+    return m.R['TI3'] - m.R['TI2'] == m.FH_cp['H1']*(213-70)+m.FH_cp['H2']*(213-50) - (193-30)*(m.FC_cp['C4']+m.FC_cp['C1']+m.FC_cp['C2'])
+def energybalance_TI4(model):
+    return m.R['TI4']-m.R['TI3'] == m.FH_cp['H2']*(50-40.92)-(30-20.92)*(m.FC_cp['C1']+m.FC_cp['C2'])
+def energybalance_TI5(model):
+    return m.Qw['Cw','TI5'] - m.R['TI4'] == m.FH_cp['H2']*(40.92-30)-m.FC_cp['C1']*(20.92-5)
+    '''
+'''
+def energybalance_TI1(model):
+    return m.R['TI1'] - m.F['F','TI1'] == m.FH_cp['H1']*(744.3-250) - m.FC_cp['C2']*(675-230)
+
+def energybalance_TI2(model):
+    return m.R['TI2']-m.R['TI1'] == m.FH_cp['H1']*(270-212.6) - (200-192.6)*(m.FC_cp['C1']+m.FC_cp['C4'])- (m.FC_cp['C3']+m.FC_cp['C2'])*(240-192.6)
+
+def energybalance_TI3(model):
+    return m.R['TI3'] - m.R['TI2'] == m.FH_cp['H1']*(213-70)+m.FH_cp['H2']*(213-50) - (193-30)*(m.FC_cp['C4']+m.FC_cp['C1']+m.FC_cp['C2'])-101.4*(70-30)
+def energybalance_TI4(model):
+    return m.R['TI4']-m.R['TI3'] == m.FH_cp['H2']*(50-40.92)-(30-20.92)*(m.FC_cp['C1']+m.FC_cp['C2'])
+def energybalance_TI5(model):
+    return m.Qw['Cw','TI5'] - m.R['TI4'] == m.FH_cp['H2']*(40.92-30)-m.FC_cp['C1']*(20.92-5)
+'''
+'''T = 230
+def energybalance_TI1(model):
+    return m.R['TI1'] - m.F['F','TI1'] == m.FH_cp['H1']*(792.3-258) - m.FC_cp['C2']*(675-228)-m.FC_cp['C3']*(230-228)
+
+def energybalance_TI2(model):
+    return m.R['TI2']-m.R['TI1'] == m.FH_cp['H1']*(258-199) - (200-192.6)*(m.FC_cp['C1']+m.FC_cp['C4'])- (m.FC_cp['C3']+m.FC_cp['C2'])*(228-169)
+
+def energybalance_TI3(model):
+    return m.R['TI3'] - m.R['TI2'] == m.FH_cp['H1']*(213-70)+m.FH_cp['H2']*(213-50) - (193-30)*(m.FC_cp['C4']+m.FC_cp['C1']+m.FC_cp['C2'])-101.4*(70-30)
+def energybalance_TI4(model):
+    return m.R['TI4']-m.R['TI3'] == m.FH_cp['H2']*(50-40.92)-(30-20.92)*(m.FC_cp['C1']+m.FC_cp['C2'])
+def energybalance_TI5(model):
+    return m.Qw['Cw','TI5'] - m.R['TI4'] == m.FH_cp['H2']*(40.92-30)-m.FC_cp['C1']*(20.92-5)
+'''
